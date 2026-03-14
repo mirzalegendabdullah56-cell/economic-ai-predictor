@@ -1,85 +1,64 @@
 import streamlit as st
-import joblib
+import pickle
+import pandas as pd
+import plotly.express as px # Charts ke liye
 
-# Page Configuration
-st.set_page_config(page_title="Economic AI Predictor", page_icon="📈", layout="centered")
-
-# Custom CSS for styling
-st.markdown("""
-    <style>
-    .main {
-        background-color: #0e1117;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 10px;
-        height: 3em;
-        background-color: #ff4b4b;
-        color: white;
-        font-weight: bold;
-        border: none;
-    }
-    .stButton>button:hover {
-        background-color: #ff2b2b;
-        border: none;
-    }
-    .prediction-card {
-        padding: 20px;
-        border-radius: 15px;
-        background-color: #1e2130;
-        border-left: 5px solid #ff4b4b;
-        margin-top: 20px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# Load Models
+# 1. Load Models
 try:
-    model = joblib.load("economic-ai-predictor.pkl")
-    vectorizer = joblib.load("tfidf_vectorizer.pkl")
-except:
-    st.error("Model files not found. Please check filenames on GitHub!")
+    model = pickle.load(open('economic-ai-predictor.pkl', 'rb'))
+    vectorizer = pickle.load(open('tfidf_vectorizer.pkl', 'rb'))
+except Exception as e:
+    st.error(f"Error loading models: {e}")
 
-# Header Section
-st.title("📈 Economic AI Predictor")
-st.markdown("---")
-st.write("Enter a global news headline below to analyze economic sentiment and stability.")
+st.set_page_config(page_title="Economic Predictor", layout="wide")
 
-# Input Area
-user_input = st.text_input("Enter economic news headline:", placeholder="e.g. Stock markets reach all-time high...")
+st.title("📊 Global Economic Stability Analyzer")
+st.markdown("Enter economic news or indicators to analyze market sentiment and stability.")
 
-if st.button("Analyze Economic Impact"):
+# Sidebar for extra info
+st.sidebar.header("About Model")
+st.sidebar.write("This model uses NLP and Machine Learning to predict economic shifts.")
+
+user_input = st.text_area("Input Text (News/Reports):", placeholder="e.g., Inflation rates are rising and stock market is volatile...")
+
+if st.button("Analyze & Predict"):
     if user_input:
-        # Prediction Logic
-        input_vector = vectorizer.transform([user_input])
-        prediction = model.predict(input_vector)[0]
+        # Transform & Predict
+        data = vectorizer.transform([user_input])
+        prediction = model.predict(data)[0]
         
-        # UI logic for Sentiment and Stability
-        # Note: Assuming your model returns 'Unstable'/'Stable' or similar categories
-        is_stable = "Stable" in str(prediction)
-        
-        st.markdown("### Analysis Result")
-        
-        # Creating Columns for metrics
-        col1, col2 = st.columns(2)
-        
+        # Confidence Score (Probability)
+        try:
+            probs = model.predict_proba(data)[0]
+        except:
+            probs = [0.5, 0.5] # Fallback agar model proba support na kare
+
+        # UI Layout with Columns
+        col1, col2 = st.columns([1, 1])
+
         with col1:
-            sentiment_label = "Negative" if not is_stable else "Positive"
-            st.metric(label="Market Sentiment", value=sentiment_label, delta="- Risk" if not is_stable else "+ Growth")
-            
+            st.subheader("Final Prediction")
+            if prediction == 0: # Check your label mapping (0 or 1)
+                st.success("### STATUS: STABLE ✅")
+                st.write("The model detects positive economic indicators.")
+            else:
+                st.error("### STATUS: UNSTABLE ⚠️")
+                st.write("Alert: Signs of volatility or risk detected.")
+
         with col2:
-            stability_label = "Unstable" if not is_stable else "Stable"
-            st.metric(label="Economic Stability", value=stability_label)
+            st.subheader("Confidence Analysis")
+            # Creating a Pie Chart for Probability
+            prob_df = pd.DataFrame({
+                'Status': ['Stable', 'Unstable'],
+                'Confidence': [probs[0], probs[1]]
+            })
+            fig = px.pie(prob_df, values='Confidence', names='Status', 
+                         color='Status', color_discrete_map={'Stable':'green', 'Unstable':'red'})
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Colorful Alert Boxes
-        if not is_stable:
-            st.error(f"⚠️ **Warning:** The system predicts market volatility and **{stability_label}** conditions.")
-        else:
-            st.success(f"✅ **Positive Outlook:** The system predicts **{stability_label}** economic conditions.")
-            
+        # Bar Chart for better visualization
+        st.subheader("Statistical Probability")
+        st.bar_chart(prob_df.set_index('Status'))
+
     else:
-        st.warning("Please enter some text first!")
-
-# Footer
-st.markdown("---")
-st.caption("Powered by Machine Learning | The Cinema Freak Production")
+        st.warning("Please enter some text for analysis.")
