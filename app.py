@@ -1,64 +1,73 @@
 import streamlit as st
 import pickle
 import pandas as pd
-import plotly.express as px # Charts ke liye
+import plotly.express as px
 
-# 1. Load Models
-try:
-    model = pickle.load(open('economic-ai-predictor.pkl', 'rb'))
-    vectorizer = pickle.load(open('tfidf_vectorizer.pkl', 'rb'))
-except Exception as e:
-    st.error(f"Error loading models: {e}")
-
+# Page config
 st.set_page_config(page_title="Economic Predictor", layout="wide")
 
+# --- 1. Load Models Safely ---
+# Ensure these filenames match EXACTLY with your GitHub files
+MODEL_PATH = 'economic-ai-predictor.pkl'
+VECTORIZER_PATH = 'tfidf_vectorizer.pkl'
+
+@st.cache_resource
+def load_assets():
+    with open(MODEL_PATH, 'rb') as f:
+        model = pickle.load(f)
+    with open(VECTORIZER_PATH, 'rb') as f:
+        vectorizer = pickle.load(f)
+    return model, vectorizer
+
+# Load them once
+model, vectorizer = load_assets()
+
+# --- 2. UI Setup ---
 st.title("📊 Global Economic Stability Analyzer")
-st.markdown("Enter economic news or indicators to analyze market sentiment and stability.")
+st.write("Analyze market sentiment and predict stability using AI.")
 
-# Sidebar for extra info
-st.sidebar.header("About Model")
-st.sidebar.write("This model uses NLP and Machine Learning to predict economic shifts.")
-
-user_input = st.text_area("Input Text (News/Reports):", placeholder="e.g., Inflation rates are rising and stock market is volatile...")
+user_input = st.text_area("Input Text (News/Reports):", 
+                          placeholder="Enter economic news here...",
+                          height=150)
 
 if st.button("Analyze & Predict"):
     if user_input:
-        # Transform & Predict
+        # Step 1: Transform
         data = vectorizer.transform([user_input])
+        
+        # Step 2: Predict
         prediction = model.predict(data)[0]
         
-        # Confidence Score (Probability)
+        # Step 3: Get Probabilities for the Graph
         try:
             probs = model.predict_proba(data)[0]
         except:
-            probs = [0.5, 0.5] # Fallback agar model proba support na kare
+            # Fallback agar model probability support nahi karta
+            probs = [0.5, 0.5] if prediction == 1 else [0.5, 0.5]
 
-        # UI Layout with Columns
+        # --- 3. Display Results ---
         col1, col2 = st.columns([1, 1])
 
         with col1:
             st.subheader("Final Prediction")
-            if prediction == 0: # Check your label mapping (0 or 1)
+            # Yahan check karein: 0 Stable hai ya 1? 
+            # Agar output ulta aye to 0 aur 1 ko swap kar dein niche
+            if prediction == 0: 
                 st.success("### STATUS: STABLE ✅")
-                st.write("The model detects positive economic indicators.")
+                st.write("Model interpretation: The economy shows signs of resilience.")
             else:
                 st.error("### STATUS: UNSTABLE ⚠️")
-                st.write("Alert: Signs of volatility or risk detected.")
+                st.write("Model interpretation: High risk or volatility detected.")
 
         with col2:
-            st.subheader("Confidence Analysis")
-            # Creating a Pie Chart for Probability
+            st.subheader("Confidence Score")
             prob_df = pd.DataFrame({
                 'Status': ['Stable', 'Unstable'],
-                'Confidence': [probs[0], probs[1]]
+                'Score': [probs[0], probs[1]]
             })
-            fig = px.pie(prob_df, values='Confidence', names='Status', 
-                         color='Status', color_discrete_map={'Stable':'green', 'Unstable':'red'})
+            fig = px.pie(prob_df, values='Score', names='Status', 
+                         color='Status', 
+                         color_discrete_map={'Stable':'#2ecc71', 'Unstable':'#e74c3c'})
             st.plotly_chart(fig, use_container_width=True)
-
-        # Bar Chart for better visualization
-        st.subheader("Statistical Probability")
-        st.bar_chart(prob_df.set_index('Status'))
-
     else:
-        st.warning("Please enter some text for analysis.")
+        st.warning("Please enter some text to analyze.")
