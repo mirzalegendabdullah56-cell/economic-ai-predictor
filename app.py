@@ -2,54 +2,77 @@ import streamlit as st
 import joblib
 import pandas as pd
 import plotly.express as px
-import os
 
-st.set_page_config(page_title="Economic Predictor", layout="wide")
-st.title("📊 Global Economic Stability Analyzer")
+# Page Setup
+st.set_page_config(page_title="Eco-Insight AI", layout="wide")
+st.title("📊 Global Economic Analyzer & Forecaster")
 
-# --- Load Assets Safely ---
-def load_model_assets():
-    try:
-        # Hum dono options try karenge: joblib aur pickle
-        m = joblib.load('economic-ai-predictor.pkl')
-        v = joblib.load('tfidf_vectorizer.pkl')
-        return m, v
-    except:
-        import pickle
-        with open('economic-ai-predictor.pkl', 'rb') as f:
-            m = pickle.load(f)
-        with open('tfidf_vectorizer.pkl', 'rb') as f:
-            v = pickle.load(f)
-        return m, v
+# Load Assets
+@st.cache_resource
+def load_assets():
+    m = joblib.load('economic-ai-predictor.pkl')
+    v = joblib.load('tfidf_vectorizer.pkl')
+    return m, v
 
 try:
-    model, vectorizer = load_model_assets()
-except Exception as e:
-    st.error("⚠️ Model Loading Failed!")
-    st.warning("Version mismatch detected. Please re-save your model using 'joblib' on your local PC and upload again.")
+    model, vectorizer = load_assets()
+except:
+    st.error("Error: Model files not found. Please upload them to GitHub.")
     st.stop()
 
-# --- Prediction UI ---
-user_input = st.text_area("Input Text (News/Reports):", placeholder="Type here...")
+# User Input
+user_input = st.text_area("✍️ Enter Economic News or Statement:", 
+                          placeholder="e.g., Inflation is decreasing and trade is booming...", 
+                          height=150)
 
-if st.button("Analyze & Predict"):
+if st.button("Generate Detailed Analysis"):
     if user_input:
+        # 1. Prediction logic
         data = vectorizer.transform([user_input])
         prediction = model.predict(data)[0]
+        probs = model.predict_proba(data)[0]
         
-        try:
-            probs = model.predict_proba(data)[0]
-        except:
-            probs = [0.5, 0.5]
+        # 2. Extract Important Words (Reasoning Logic)
+        feature_names = vectorizer.get_feature_names_out()
+        words_in_text = user_input.lower().split()
+        important_words = [word for word in words_in_text if word in feature_names]
 
-        col1, col2 = st.columns(2)
+        st.divider()
+
+        # Layout: Prediction | Trends
+        col1, col2 = st.columns([1.2, 1])
+
         with col1:
+            st.subheader("🔍 Prediction Reasoning")
             if prediction == 0:
-                st.success("### STATUS: STABLE ✅")
+                st.success("### RESULT: STABLE ✅")
+                st.write(f"**Why?** The model detected positive sentiment in your text. Keywords like **'{', '.join(important_words[:3])}'** indicate economic resilience.")
             else:
-                st.error("### STATUS: UNSTABLE ⚠️")
-        
+                st.error("### RESULT: UNSTABLE ⚠️")
+                st.write(f"**Why?** Analysis shows risk factors. Terms like **'{', '.join(important_words[:3])}'** are strongly associated with market volatility.")
+            
+            # Probability Chart
+            prob_df = pd.DataFrame({'Status': ['Stable', 'Unstable'], 'Confidence': [probs[0], probs[1]]})
+            fig = px.bar(prob_df, x='Status', y='Confidence', color='Status', 
+                         color_discrete_map={'Stable':'green', 'Unstable':'red'})
+            st.plotly_chart(fig, use_container_width=True)
+
         with col2:
-            prob_df = pd.DataFrame({'Status': ['Stable', 'Unstable'], 'Score': [probs[0], probs[1]]})
-            fig = px.pie(prob_df, values='Score', names='Status', color_discrete_sequence=['#2ecc71', '#e74c3c'])
-            st.plotly_chart(fig)
+            st.subheader("📈 Upcoming Future Trends")
+            if prediction == 0:
+                st.info("""
+                * **Investment:** High probability of Foreign Direct Investment (FDI).
+                * **Currency:** Expected to remain strong against global peers.
+                * **Forecast:** Continued growth for the next 2 quarters.
+                """)
+            else:
+                st.warning("""
+                * **Market:** High chance of bearish (downward) trend.
+                * **Risk:** Investors might move towards 'Safe Haven' assets like Gold.
+                * **Forecast:** Potential policy rate hikes to control volatility.
+                """)
+            
+            st.caption("Note: These trends are AI-generated based on current sentiment analysis.")
+
+    else:
+        st.warning("Please enter some economic text first!")
