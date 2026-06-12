@@ -67,7 +67,12 @@ st.markdown("""
     .outlook-box { background: #060c18; border: 1px solid #1e2d4a; border-radius: 8px; padding: 1rem 1.2rem; font-size: 14px; color: #94a3b8; line-height: 1.75; margin-top: 1rem; }
     .outlook-box strong { color: #cbd5e1; }
     .divider { border: none; border-top: 1px solid #1e2d4a; margin: 2rem 0; }
-    .api-info { background: rgba(56,189,248,0.05); border: 1px solid rgba(56,189,248,0.15); border-radius: 8px; padding: 0.8rem 1.2rem; font-size: 12px; color: #475569; font-family: 'IBM Plex Mono', monospace; margin-bottom: 1rem; }
+
+    .mode-strip { display: flex; gap: 10px; margin-bottom: 1.5rem; }
+    .mode-btn { flex: 1; background: #0d1526; border: 1px solid #1e2d4a; border-radius: 8px; padding: 0.9rem 1rem; text-align: center; cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #64748b; letter-spacing: 1px; text-transform: uppercase; transition: all 0.2s; }
+    .mode-btn.active { border-color: #38bdf8; color: #38bdf8; background: rgba(56,189,248,0.06); }
+
+    .search-badge { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10px; padding: 2px 8px; border-radius: 3px; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.2); color: #38bdf8; margin-left: 6px; vertical-align: middle; }
 
     #MainMenu, footer, header { visibility: hidden; }
     .stDeployButton { display: none; }
@@ -75,11 +80,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Gemini API ───────────────────────────────────────────────
-def analyze_with_gemini(text: str, api_key: str) -> dict:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+# ── Claude API with web_search tool ─────────────────────────
+def analyze_with_claude(text: str, use_web_search: bool = False) -> dict:
+    tools = []
+    if use_web_search:
+        tools.append({
+            "type": "web_search_20250305",
+            "name": "web_search"
+        })
 
-    prompt = f"""You are a strict world-class macroeconomic analyst. Analyze the economic statement and classify it.
+    prompt = f"""You are a strict world-class macroeconomic analyst. Analyze the economic statement (or research the country/economy if asked) and classify it.
 
 RULES (must follow):
 - STABLE: GDP growth, low inflation, fiscal discipline, strong exports, currency stability, investor confidence.
@@ -88,7 +98,9 @@ RULES (must follow):
 
 CRITICAL: Words like crisis, crash, collapse, hyperinflation, default, war, sanctions, recession, instability ALWAYS = UNSTABLE. Never default to STABLE if risk signals exist.
 
-Economic Statement:
+{"Use web search to find the latest real-time economic data for the mentioned country/economy before analyzing." if use_web_search else ""}
+
+Economic Query:
 \"\"\"{text}\"\"\"
 
 Return ONLY valid JSON — no markdown, no extra text:
@@ -96,57 +108,88 @@ Return ONLY valid JSON — no markdown, no extra text:
   "verdict": "STABLE" or "UNSTABLE" or "MODERATE_RISK",
   "confidence": <integer 60-99>,
   "risk_score": <integer 0-100, where 0=perfectly stable 100=total collapse>,
-  "reason": "<2-3 sentences explaining WHY based on specific terms in the input>",
+  "reason": "<2-3 sentences explaining WHY based on specific data points>",
   "keywords_positive": ["word1", "word2"],
   "keywords_negative": ["word1", "word2"],
   "outlook_6m": "<one sentence forecast for next 6 months>",
   "gdp_trend": [<6 floats, monthly GDP growth % forecast>],
-  "inflation_trend": [<6 floats, monthly inflation % forecast>]
+  "inflation_trend": [<6 floats, monthly inflation % forecast>],
+  "data_source": "<'real-time web data' or 'training knowledge'>"
 }}"""
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1000,
+        "messages": [{"role": "user", "content": prompt}]
     }
+    if tools:
+        payload["tools"] = tools
 
-    resp = requests.post(url, json=payload, timeout=30)
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=60
+    )
     resp.raise_for_status()
-    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    raw = re.sub(r"```json|```", "", raw).strip()
-    return json.loads(raw)
+    data = resp.json()
+
+    # Extract text from content blocks (handle tool_use blocks too)
+    raw_text = ""
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            raw_text += block.get("text", "")
+
+    raw_text = re.sub(r"```json|```", "", raw_text).strip()
+    return json.loads(raw_text)
 
 
 # ── Header ───────────────────────────────────────────────────
 st.markdown("""
 <div class="eco-header">
-    <div class="badge">Gemini AI · Semantic NLP · Economic Intelligence</div>
+    <div class="badge">Claude AI · Real-Time Search · Economic Intelligence</div>
     <h1>Eco-Insight <span>AI</span></h1>
-    <p>Global Economic Analyzer & Forecaster — powered by Google Gemini 2.0 Flash (FREE)</p>
+    <p>Global Economic Analyzer & Forecaster — powered by Claude Sonnet + Live Web Search</p>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="stat-strip">
     <div class="stat-item"><div class="val">190+</div><div class="lbl">Countries</div></div>
-    <div class="stat-item"><div class="val">Gemini</div><div class="lbl">AI Engine</div></div>
+    <div class="stat-item"><div class="val">Claude</div><div class="lbl">AI Engine</div></div>
     <div class="stat-item"><div class="val">3-Class</div><div class="lbl">Classification</div></div>
-    <div class="stat-item"><div class="val">Real-time</div><div class="lbl">Inference</div></div>
+    <div class="stat-item"><div class="val">Live</div><div class="lbl">Web Search</div></div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── API Key input ────────────────────────────────────────────
-st.markdown('<div class="input-panel"><div class="panel-label">Google Gemini API Key (FREE)</div>', unsafe_allow_html=True)
-api_key = st.text_input(label="GEMINI KEY", type="password", placeholder="AIzaSy...")
-st.markdown('</div>', unsafe_allow_html=True)
+# ── Mode selector ────────────────────────────────────────────
+st.markdown('<div class="section-title">Analysis Mode</div>', unsafe_allow_html=True)
+mode = st.radio(
+    label="mode",
+    options=["📝  Analyze my statement", "🌐  Look up a country (real-time)"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+use_web = "real-time" in mode
 
-st.markdown('<div class="api-info">🆓 Bilkul FREE — aistudio.google.com → "Get API Key" (no credit card needed)</div>', unsafe_allow_html=True)
+if use_web:
+    st.markdown("""
+    <div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);border-radius:8px;
+                padding:0.7rem 1.1rem;font-size:12px;color:#475569;font-family:'IBM Plex Mono',monospace;margin-bottom:1rem;">
+        🌐 Real-time mode: Claude will search the web for latest economic data before analyzing.
+        Just type a country name like <span style="color:#38bdf8">Pakistan</span>, <span style="color:#38bdf8">Turkey</span>, <span style="color:#38bdf8">USA</span> etc.
+    </div>
+    """, unsafe_allow_html=True)
+    placeholder_text = "e.g.  Pakistan  or  Turkey economy 2025  or  Germany GDP outlook"
+else:
+    placeholder_text = "e.g.  Pakistan is facing a severe debt crisis with 38% inflation, currency collapse and IMF bailout talks failing..."
 
 # ── Text input ───────────────────────────────────────────────
-st.markdown('<div class="input-panel"><div class="panel-label">Economic Statement Input</div>', unsafe_allow_html=True)
+st.markdown('<div class="input-panel"><div class="panel-label">Economic Statement / Country Name</div>', unsafe_allow_html=True)
 user_input = st.text_area(
     label="input",
-    placeholder="e.g.  Pakistan is facing a severe debt crisis with 38% inflation, currency collapse and IMF bailout talks failing...",
-    height=140
+    placeholder=placeholder_text,
+    height=120
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -155,16 +198,15 @@ run = st.button("🔍 Generate Detailed Analysis")
 
 # ── Run analysis ─────────────────────────────────────────────
 if run:
-    if not api_key.strip():
-        st.error("Gemini API key daalo upar.")
-        st.stop()
     if not user_input.strip():
-        st.warning("Economic statement daalo pehle.")
+        st.warning("Kuch toh daalo — country name ya economic statement.")
         st.stop()
 
-    with st.spinner("Gemini AI analyze kar raha hai..."):
+    spinner_msg = "Claude AI web search kar raha hai aur analyze kar raha hai..." if use_web else "Claude AI analyze kar raha hai..."
+
+    with st.spinner(spinner_msg):
         try:
-            result = analyze_with_gemini(user_input.strip(), api_key.strip())
+            result = analyze_with_claude(user_input.strip(), use_web_search=use_web)
         except requests.exceptions.HTTPError as e:
             st.error(f"API Error {e.response.status_code}: {e.response.text[:300]}")
             st.stop()
@@ -184,6 +226,7 @@ if run:
     outlook    = result.get("outlook_6m", "")
     gdp_trend  = result.get("gdp_trend",       [1.0,1.2,1.4,1.6,1.8,2.0])
     inf_trend  = result.get("inflation_trend", [4.0,3.8,3.6,3.4,3.2,3.0])
+    data_src   = result.get("data_source", "training knowledge")
 
     if verdict == "STABLE":
         card_cls, verdict_html = "stable",   '<div class="verdict-stable">● STABLE — ECONOMY</div>'
@@ -195,11 +238,13 @@ if run:
         card_cls, verdict_html = "moderate", '<div class="verdict-moderate">◈ MODERATE RISK</div>'
         lg, li, icon, gc = '#f59e0b', '#fb923c', "⚡", '#f59e0b'
 
+    src_badge = f'<span class="search-badge">{"🌐 " if "real-time" in data_src else "🧠 "}{data_src}</span>'
+
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
     col1, col2 = st.columns([1.15, 1], gap="large")
 
     with col1:
-        st.markdown('<div class="section-title">Prediction Reasoning</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-title">Prediction Reasoning {src_badge}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="result-card {card_cls}">', unsafe_allow_html=True)
         st.markdown(verdict_html, unsafe_allow_html=True)
         st.markdown(f'<div class="reason-box"><strong>Why?</strong> {reason}</div>', unsafe_allow_html=True)
@@ -268,6 +313,6 @@ if run:
 st.markdown("""
 <div style="text-align:center;margin-top:4rem;padding-top:1.5rem;border-top:1px solid #1e2d4a;
             font-family:'IBM Plex Mono',monospace;font-size:11px;color:#334155;letter-spacing:1px;">
-    ECO-INSIGHT AI &nbsp;·&nbsp; POWERED BY GOOGLE GEMINI 2.0 FLASH &nbsp;·&nbsp; SEMANTIC ECONOMIC CLASSIFIER
+    ECO-INSIGHT AI &nbsp;·&nbsp; POWERED BY CLAUDE SONNET + WEB SEARCH &nbsp;·&nbsp; SEMANTIC ECONOMIC CLASSIFIER
 </div>
 """, unsafe_allow_html=True)
