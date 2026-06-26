@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
-import json
 import re
+import random
 
 st.set_page_config(
     page_title="Eco-Insight AI",
@@ -80,115 +79,261 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Claude API with web_search tool ─────────────────────────
-def analyze_with_claude(text: str, use_web_search: bool = False) -> dict:
-    tools = []
-    if use_web_search:
-        tools.append({
-            "type": "web_search_20250305",
-            "name": "web_search"
-        })
+# ════════════════════════════════════════════════════════════
+#  OFFLINE RULE-BASED ECONOMIC ANALYSIS ENGINE (NO API NEEDED)
+# ════════════════════════════════════════════════════════════
 
-    prompt = f"""You are a strict world-class macroeconomic analyst. Analyze the economic statement (or research the country/economy if asked) and classify it.
+# Keyword banks with weights — heavier weight = stronger signal
+UNSTABLE_KEYWORDS = {
+    "hyperinflation": 30, "crisis": 25, "collapse": 28, "default": 27,
+    "recession": 22, "crash": 26, "bankruptcy": 24, "war": 20,
+    "sanctions": 18, "capital flight": 22, "currency collapse": 28,
+    "banking crisis": 25, "debt crisis": 24, "imf bailout": 16,
+    "devaluation": 18, "unemployment surge": 20, "instability": 18,
+    "civil unrest": 19, "political turmoil": 17, "shutdown": 15,
+    "deficit": 12, "inflation surge": 20, "currency depreciation": 17,
+    "stagflation": 23, "credit downgrade": 19, "default risk": 22,
+    "economic downturn": 18, "negative growth": 19, "contraction": 16,
+    "layoffs": 14, "bank run": 26, "panic selling": 20, "embargo": 18,
+}
 
-RULES (must follow):
-- STABLE: GDP growth, low inflation, fiscal discipline, strong exports, currency stability, investor confidence.
-- UNSTABLE: recession, hyperinflation, currency collapse, debt default, banking crisis, capital flight, war impact, IMF distress, sanctions, crash, crisis, bankruptcy.
-- MODERATE_RISK: mixed signals — some positive and some negative, uncertainty but not full crisis.
+STABLE_KEYWORDS = {
+    "gdp growth": 22, "stable currency": 20, "fiscal discipline": 22,
+    "strong exports": 18, "investor confidence": 20, "low inflation": 20,
+    "trade surplus": 18, "economic growth": 18, "job creation": 16,
+    "foreign investment": 17, "surplus": 14, "expansion": 14,
+    "rate cut": 10, "record high": 14, "strong demand": 14,
+    "robust growth": 19, "currency strength": 17, "credit upgrade": 18,
+    "stable inflation": 18, "economic boom": 20, "diversification": 12,
+    "resilient economy": 19, "strong reserves": 16, "trade agreement": 13,
+    "manufacturing growth": 15, "consumer confidence": 15, "recovery": 14,
+    "growth forecast": 14, "positive outlook": 13,
+}
 
-CRITICAL: Words like crisis, crash, collapse, hyperinflation, default, war, sanctions, recession, instability ALWAYS = UNSTABLE. Never default to STABLE if risk signals exist.
+MODERATE_KEYWORDS = {
+    "mixed signals": 14, "uncertainty": 13, "slowdown": 13,
+    "moderate growth": 11, "cautious": 10, "volatile": 14,
+    "fluctuating": 11, "under pressure": 12, "watching closely": 8,
+    "modest growth": 10, "tepid": 10, "uneven recovery": 12,
+}
 
-{"Use web search to find the latest real-time economic data for the mentioned country/economy before analyzing." if use_web_search else ""}
+# Lightweight offline knowledge base — general, well-known economic
+# reputations used ONLY as a mild prior nudge, never an overriding fact.
+COUNTRY_PRIORS = {
+    "pakistan":    {"bias": "moderate", "note": "history of IMF program dependence and currency pressure, balanced against periodic remittance and export growth"},
+    "india":       {"bias": "stable",   "note": "large, diversified, consistently fast-growing economy"},
+    "usa":         {"bias": "stable",   "note": "world's largest economy with deep capital markets, though periodically affected by debt-ceiling and rate-policy debates"},
+    "united states": {"bias": "stable", "note": "world's largest economy with deep capital markets"},
+    "china":       {"bias": "moderate", "note": "major global economy currently navigating a property-sector slowdown and export pressures"},
+    "turkey":      {"bias": "unstable", "note": "recent years marked by very high inflation and currency depreciation"},
+    "sri lanka":   {"bias": "unstable", "note": "sovereign default and severe forex crisis in recent years"},
+    "venezuela":   {"bias": "unstable", "note": "long-running hyperinflation and economic contraction"},
+    "argentina":   {"bias": "unstable", "note": "chronic high inflation and repeated debt restructuring"},
+    "germany":     {"bias": "stable",   "note": "Europe's largest and most industrially diversified economy"},
+    "japan":       {"bias": "stable",   "note": "advanced economy with very low (sometimes negative) inflation and high public debt offset by strong domestic savings"},
+    "bangladesh":  {"bias": "moderate", "note": "strong garment-export growth balanced against forex reserve pressure"},
+    "uk":          {"bias": "moderate", "note": "developed economy navigating post-Brexit trade adjustments and inflation"},
+    "united kingdom": {"bias": "moderate", "note": "developed economy navigating post-Brexit trade adjustments and inflation"},
+    "russia":      {"bias": "unstable", "note": "economy under sustained Western sanctions pressure"},
+    "uae":         {"bias": "stable",   "note": "diversified, oil-and-trade-driven Gulf economy with strong reserves"},
+    "saudi arabia": {"bias": "stable",  "note": "oil-revenue-backed economy pursuing diversification under Vision 2030"},
+    "egypt":       {"bias": "moderate", "note": "currency pressure balanced against IMF-supported reform program"},
+    "nigeria":     {"bias": "moderate", "note": "oil-revenue dependent economy with currency and inflation pressure"},
+    "bangladesh":  {"bias": "moderate", "note": "export-driven growth balanced against reserve pressure"},
+}
 
-Economic Query:
-\"\"\"{text}\"\"\"
 
-Return ONLY valid JSON — no markdown, no extra text:
-{{
-  "verdict": "STABLE" or "UNSTABLE" or "MODERATE_RISK",
-  "confidence": <integer 60-99>,
-  "risk_score": <integer 0-100, where 0=perfectly stable 100=total collapse>,
-  "reason": "<2-3 sentences explaining WHY based on specific data points>",
-  "keywords_positive": ["word1", "word2"],
-  "keywords_negative": ["word1", "word2"],
-  "outlook_6m": "<one sentence forecast for next 6 months>",
-  "gdp_trend": [<6 floats, monthly GDP growth % forecast>],
-  "inflation_trend": [<6 floats, monthly inflation % forecast>],
-  "data_source": "<'real-time web data' or 'training knowledge'>"
-}}"""
+def _find_matches(text_lower: str, keyword_dict: dict):
+    """Return list of (keyword, weight) found in text."""
+    found = []
+    for kw, weight in keyword_dict.items():
+        if kw in text_lower:
+            found.append((kw, weight))
+    return found
 
-    payload = {
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 1000,
-        "messages": [{"role": "user", "content": prompt}]
+
+def _detect_country(text_lower: str):
+    for name in COUNTRY_PRIORS:
+        if name in text_lower:
+            return name
+    return None
+
+
+def analyze_offline(text: str) -> dict:
+    """
+    Fully offline, rule-based macroeconomic analyzer.
+    No API key, no internet call — pure Python logic.
+    """
+    text_lower = text.lower().strip()
+
+    unstable_hits = _find_matches(text_lower, UNSTABLE_KEYWORDS)
+    stable_hits   = _find_matches(text_lower, STABLE_KEYWORDS)
+    moderate_hits = _find_matches(text_lower, MODERATE_KEYWORDS)
+
+    unstable_score = sum(w for _, w in unstable_hits)
+    stable_score   = sum(w for _, w in stable_hits)
+    moderate_score = sum(w for _, w in moderate_hits)
+
+    # Country prior — small nudge only, applied only if NO strong keyword
+    # signal already exists in either direction (keywords always win).
+    country = _detect_country(text_lower)
+    country_note = None
+    if country:
+        prior = COUNTRY_PRIORS[country]
+        country_note = prior["note"]
+        if unstable_score == 0 and stable_score == 0 and moderate_score == 0:
+            if prior["bias"] == "stable":
+                stable_score += 12
+            elif prior["bias"] == "unstable":
+                unstable_score += 12
+            else:
+                moderate_score += 10
+
+    # If literally nothing matched and no country recognized,
+    # fall back to a light neutral/moderate read instead of guessing wildly.
+    if unstable_score == 0 and stable_score == 0 and moderate_score == 0:
+        moderate_score = 10
+
+    total = unstable_score + stable_score + moderate_score
+
+    # ── Verdict logic ────────────────────────────────────────
+    # Hard rule: if any high-severity crisis keyword present, force UNSTABLE
+    severe_words = {"hyperinflation", "collapse", "default", "bankruptcy",
+                     "bank run", "currency collapse", "crash"}
+    forced_unstable = any(kw in text_lower for kw in severe_words)
+
+    if forced_unstable or (unstable_score > stable_score + moderate_score and unstable_score >= 18):
+        verdict = "UNSTABLE"
+    elif stable_score > unstable_score and stable_score > moderate_score and unstable_score < 15:
+        verdict = "STABLE"
+    elif unstable_score > 0 and stable_score > 0 and abs(unstable_score - stable_score) <= 12:
+        verdict = "MODERATE_RISK"
+    elif unstable_score > stable_score and stable_score == 0 and moderate_score == 0:
+        # Pure unstable signal with nothing pulling the other way
+        # (e.g. a country-only prior like "Turkey") — don't water it
+        # down into MODERATE_RISK just because the absolute score is small.
+        verdict = "UNSTABLE"
+    elif stable_score > unstable_score and unstable_score == 0 and moderate_score == 0:
+        verdict = "STABLE"
+    elif unstable_score > stable_score:
+        verdict = "MODERATE_RISK" if unstable_score < 30 else "UNSTABLE"
+    elif stable_score > unstable_score:
+        verdict = "STABLE"
+    else:
+        verdict = "MODERATE_RISK"
+
+    # ── Risk score (0 = perfectly stable, 100 = total collapse) ─
+    if total > 0:
+        raw_risk = (unstable_score * 1.3 + moderate_score * 0.6 - stable_score * 1.1)
+        risk_score = int(max(5, min(95, 50 + raw_risk)))
+    else:
+        risk_score = 50
+
+    # Nudge risk score to be consistent with verdict bucket
+    if verdict == "STABLE":
+        risk_score = min(risk_score, 38)
+    elif verdict == "UNSTABLE":
+        risk_score = max(risk_score, 62)
+    else:
+        risk_score = max(35, min(risk_score, 65))
+
+    # ── Confidence (60-99) — higher when signal is strong/unambiguous ─
+    signal_strength = max(unstable_score, stable_score, moderate_score)
+    gap = abs(unstable_score - stable_score)
+    confidence = 60 + min(35, int(signal_strength * 0.6 + gap * 0.3))
+    confidence = max(60, min(99, confidence))
+
+    # ── Build human-readable reason ──────────────────────────
+    pos_words = [k for k, _ in stable_hits][:5]
+    neg_words = [k for k, _ in (unstable_hits + moderate_hits)][:5]
+
+    reason_parts = []
+    if neg_words:
+        reason_parts.append(f"Detected risk signals such as {', '.join(neg_words[:3])}")
+    if pos_words:
+        reason_parts.append(f"alongside positive indicators like {', '.join(pos_words[:3])}")
+    if country_note and not neg_words and not pos_words:
+        reason_parts.append(country_note.capitalize())
+    elif country_note:
+        reason_parts.append(f"Broader context: {country_note}")
+
+    if not reason_parts:
+        reason = "No strong economic signal keywords were detected in the input, so this is a neutral, low-confidence baseline read. Add specific terms (inflation, GDP growth, crisis, surplus, etc.) for a sharper analysis."
+    else:
+        reason = ". ".join(reason_parts) + "."
+
+    # ── 6-month outlook sentence ─────────────────────────────
+    if verdict == "STABLE":
+        outlook = "Indicators point toward continued steady growth over the next two quarters, barring external shocks."
+    elif verdict == "UNSTABLE":
+        outlook = "Conditions are likely to remain under significant pressure over the next two quarters unless corrective fiscal or monetary action is taken."
+    else:
+        outlook = "Expect a mixed trajectory over the next two quarters — modest improvement is plausible, but downside risks have not cleared."
+
+    # ── Synthetic 6-month GDP / inflation trend lines ────────
+    # Deterministic-ish but varied: seeded from the input so repeated
+    # runs on the same text give the same chart.
+    random.seed(abs(hash(text_lower)) % (10 ** 6))
+
+    if verdict == "STABLE":
+        gdp_base, gdp_step = 1.8, 0.18
+        inf_base, inf_step = 4.5, -0.25
+    elif verdict == "UNSTABLE":
+        gdp_base, gdp_step = -0.8, -0.15
+        inf_base, inf_step = 18.0, 1.4
+    else:
+        gdp_base, gdp_step = 0.9, 0.05
+        inf_base, inf_step = 7.5, 0.15
+
+    gdp_trend = [round(gdp_base + gdp_step * i + random.uniform(-0.15, 0.15), 2) for i in range(6)]
+    inf_trend = [round(max(0.2, inf_base + inf_step * i + random.uniform(-0.3, 0.3)), 2) for i in range(6)]
+
+    return {
+        "verdict": verdict,
+        "confidence": confidence,
+        "risk_score": risk_score,
+        "reason": reason,
+        "keywords_positive": pos_words,
+        "keywords_negative": neg_words,
+        "outlook_6m": outlook,
+        "gdp_trend": gdp_trend,
+        "inflation_trend": inf_trend,
+        "data_source": "offline rule-based engine (no API)",
     }
-    if tools:
-        payload["tools"] = tools
-
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"Content-Type": "application/json"},
-        json=payload,
-        timeout=60
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Extract text from content blocks (handle tool_use blocks too)
-    raw_text = ""
-    for block in data.get("content", []):
-        if block.get("type") == "text":
-            raw_text += block.get("text", "")
-
-    raw_text = re.sub(r"```json|```", "", raw_text).strip()
-    return json.loads(raw_text)
 
 
 # ── Header ───────────────────────────────────────────────────
 st.markdown("""
 <div class="eco-header">
-    <div class="badge">Claude AI · Real-Time Search · Economic Intelligence</div>
+    <div class="badge">Offline Engine · No API Key · Rule-Based Logic</div>
     <h1>Eco-Insight <span>AI</span></h1>
-    <p>Global Economic Analyzer & Forecaster — powered by Claude Sonnet + Live Web Search</p>
+    <p>Global Economic Analyzer & Forecaster — 100% offline, runs entirely on your machine</p>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="stat-strip">
     <div class="stat-item"><div class="val">190+</div><div class="lbl">Countries</div></div>
-    <div class="stat-item"><div class="val">Claude</div><div class="lbl">AI Engine</div></div>
+    <div class="stat-item"><div class="val">Offline</div><div class="lbl">AI Engine</div></div>
     <div class="stat-item"><div class="val">3-Class</div><div class="lbl">Classification</div></div>
-    <div class="stat-item"><div class="val">Live</div><div class="lbl">Web Search</div></div>
+    <div class="stat-item"><div class="val">0 Cost</div><div class="lbl">No API Key</div></div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Mode selector ────────────────────────────────────────────
-st.markdown('<div class="section-title">Analysis Mode</div>', unsafe_allow_html=True)
-mode = st.radio(
-    label="mode",
-    options=["📝  Analyze my statement", "🌐  Look up a country (real-time)"],
-    horizontal=True,
-    label_visibility="collapsed"
-)
-use_web = "real-time" in mode
-
-if use_web:
-    st.markdown("""
-    <div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);border-radius:8px;
-                padding:0.7rem 1.1rem;font-size:12px;color:#475569;font-family:'IBM Plex Mono',monospace;margin-bottom:1rem;">
-        🌐 Real-time mode: Claude will search the web for latest economic data before analyzing.
-        Just type a country name like <span style="color:#38bdf8">Pakistan</span>, <span style="color:#38bdf8">Turkey</span>, <span style="color:#38bdf8">USA</span> etc.
-    </div>
-    """, unsafe_allow_html=True)
-    placeholder_text = "e.g.  Pakistan  or  Turkey economy 2025  or  Germany GDP outlook"
-else:
-    placeholder_text = "e.g.  Pakistan is facing a severe debt crisis with 38% inflation, currency collapse and IMF bailout talks failing..."
+st.markdown("""
+<div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);border-radius:8px;
+            padding:0.7rem 1.1rem;font-size:12px;color:#475569;font-family:'IBM Plex Mono',monospace;margin-bottom:1.2rem;">
+    ⚙️ This version runs a fully local, rule-based keyword + scoring engine — no internet call, no API key required.
+    Type a country name (e.g. <span style="color:#38bdf8">Pakistan</span>, <span style="color:#38bdf8">Turkey</span>)
+    or a full economic statement for best results.
+</div>
+""", unsafe_allow_html=True)
 
 # ── Text input ───────────────────────────────────────────────
 st.markdown('<div class="input-panel"><div class="panel-label">Economic Statement / Country Name</div>', unsafe_allow_html=True)
 user_input = st.text_area(
     label="input",
-    placeholder=placeholder_text,
+    placeholder="e.g.  Pakistan is facing a severe debt crisis with high inflation, currency depreciation and IMF bailout talks...\n\nor simply type:  Germany   /   Turkey   /   Sri Lanka",
     height=120
 )
 st.markdown('</div>', unsafe_allow_html=True)
@@ -202,20 +347,8 @@ if run:
         st.warning("Kuch toh daalo — country name ya economic statement.")
         st.stop()
 
-    spinner_msg = "Claude AI web search kar raha hai aur analyze kar raha hai..." if use_web else "Claude AI analyze kar raha hai..."
-
-    with st.spinner(spinner_msg):
-        try:
-            result = analyze_with_claude(user_input.strip(), use_web_search=use_web)
-        except requests.exceptions.HTTPError as e:
-            st.error(f"API Error {e.response.status_code}: {e.response.text[:300]}")
-            st.stop()
-        except json.JSONDecodeError as e:
-            st.error(f"JSON parse error: {e}")
-            st.stop()
-        except Exception as e:
-            st.error(f"Error: {e}")
-            st.stop()
+    with st.spinner("Offline engine analyze kar raha hai..."):
+        result = analyze_offline(user_input.strip())
 
     verdict    = result.get("verdict", "MODERATE_RISK")
     confidence = result.get("confidence", 70)
@@ -224,9 +357,9 @@ if run:
     kw_pos     = result.get("keywords_positive", [])
     kw_neg     = result.get("keywords_negative", [])
     outlook    = result.get("outlook_6m", "")
-    gdp_trend  = result.get("gdp_trend",       [1.0,1.2,1.4,1.6,1.8,2.0])
-    inf_trend  = result.get("inflation_trend", [4.0,3.8,3.6,3.4,3.2,3.0])
-    data_src   = result.get("data_source", "training knowledge")
+    gdp_trend  = result.get("gdp_trend",       [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
+    inf_trend  = result.get("inflation_trend", [4.0, 3.8, 3.6, 3.4, 3.2, 3.0])
+    data_src   = result.get("data_source", "offline rule-based engine")
 
     if verdict == "STABLE":
         card_cls, verdict_html = "stable",   '<div class="verdict-stable">● STABLE — ECONOMY</div>'
@@ -238,7 +371,7 @@ if run:
         card_cls, verdict_html = "moderate", '<div class="verdict-moderate">◈ MODERATE RISK</div>'
         lg, li, icon, gc = '#f59e0b', '#fb923c', "⚡", '#f59e0b'
 
-    src_badge = f'<span class="search-badge">{"🌐 " if "real-time" in data_src else "🧠 "}{data_src}</span>'
+    src_badge = f'<span class="search-badge">⚙️ {data_src}</span>'
 
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
     col1, col2 = st.columns([1.15, 1], gap="large")
@@ -262,19 +395,19 @@ if run:
         st.markdown('<div class="section-title" style="margin-top:1.4rem">Model Confidence</div>', unsafe_allow_html=True)
         rem = 100 - confidence
         if verdict == "STABLE":
-            lb, vl, cm = ['Stable','Unstable'], [confidence,rem], {'Stable':'#22c55e','Unstable':'#ef4444'}
+            lb, vl, cm = ['Stable', 'Unstable'], [confidence, rem], {'Stable': '#22c55e', 'Unstable': '#ef4444'}
         elif verdict == "UNSTABLE":
-            lb, vl, cm = ['Unstable','Stable'], [confidence,rem], {'Unstable':'#ef4444','Stable':'#22c55e'}
+            lb, vl, cm = ['Unstable', 'Stable'], [confidence, rem], {'Unstable': '#ef4444', 'Stable': '#22c55e'}
         else:
-            lb, vl, cm = ['Moderate','Stable'], [confidence,rem], {'Moderate':'#f59e0b','Stable':'#22c55e'}
+            lb, vl, cm = ['Moderate', 'Stable'], [confidence, rem], {'Moderate': '#f59e0b', 'Stable': '#22c55e'}
 
-        fig = px.bar(pd.DataFrame({'Status':lb,'Confidence (%)':vl}), x='Status', y='Confidence (%)',
+        fig = px.bar(pd.DataFrame({'Status': lb, 'Confidence (%)': vl}), x='Status', y='Confidence (%)',
                      color='Status', color_discrete_map=cm, text='Confidence (%)')
         fig.update_traces(texttemplate='%{text:.0f}%', textposition='outside', marker_line_width=0, width=0.45)
         fig.update_layout(paper_bgcolor='#0d1526', plot_bgcolor='#060c18', font_color='#94a3b8',
-            font_family='Space Grotesk', showlegend=False, margin=dict(t=20,b=10,l=10,r=10), height=260,
-            xaxis=dict(showgrid=False, tickfont=dict(size=13,color='#cbd5e1')),
-            yaxis=dict(showgrid=True, gridcolor='#1e2d4a', range=[0,115], ticksuffix='%', tickfont=dict(size=11,color='#475569')))
+            font_family='Space Grotesk', showlegend=False, margin=dict(t=20, b=10, l=10, r=10), height=260,
+            xaxis=dict(showgrid=False, tickfont=dict(size=13, color='#cbd5e1')),
+            yaxis=dict(showgrid=True, gridcolor='#1e2d4a', range=[0, 115], ticksuffix='%', tickfont=dict(size=11, color='#475569')))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -282,7 +415,7 @@ if run:
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
         st.markdown(f'<div class="outlook-box"><span style="font-size:18px;margin-right:6px">{icon}</span><strong>Outlook:</strong> {outlook}</div>', unsafe_allow_html=True)
 
-        ml = ['M+1','M+2','M+3','M+4','M+5','M+6']
+        ml = ['M+1', 'M+2', 'M+3', 'M+4', 'M+5', 'M+6']
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(x=ml, y=gdp_trend, mode='lines+markers', name='GDP Growth (%)',
             line=dict(color=lg, width=2.5), marker=dict(size=6, color=lg)))
@@ -291,20 +424,20 @@ if run:
         fig2.update_layout(paper_bgcolor='#0d1526', plot_bgcolor='#060c18', font_color='#94a3b8',
             font_family='Space Grotesk',
             legend=dict(orientation='h', y=1.12, x=0, font=dict(size=11), bgcolor='rgba(0,0,0,0)'),
-            margin=dict(t=30,b=10,l=10,r=10), height=240,
-            xaxis=dict(showgrid=False, tickfont=dict(size=11,color='#475569')),
-            yaxis=dict(showgrid=True, gridcolor='#1e2d4a', ticksuffix='%', tickfont=dict(size=11,color='#475569')))
+            margin=dict(t=30, b=10, l=10, r=10), height=240,
+            xaxis=dict(showgrid=False, tickfont=dict(size=11, color='#475569')),
+            yaxis=dict(showgrid=True, gridcolor='#1e2d4a', ticksuffix='%', tickfont=dict(size=11, color='#475569')))
         st.plotly_chart(fig2, use_container_width=True)
 
         st.markdown('<div class="section-title" style="margin-top:0.5rem">Confidence Gauge</div>', unsafe_allow_html=True)
         fig3 = go.Figure(go.Indicator(
             mode="gauge+number", value=confidence,
-            number={'suffix':'%','font':{'size':28,'color':'#f1f5f9','family':'IBM Plex Mono'}},
-            gauge={'axis':{'range':[0,100],'tickwidth':1,'tickcolor':'#1e2d4a','tickfont':{'color':'#475569','size':10}},
-                   'bar':{'color':gc,'thickness':0.22},'bgcolor':'#060c18','borderwidth':0,
-                   'steps':[{'range':[0,50],'color':'#0d1526'},{'range':[50,75],'color':'#111827'},{'range':[75,100],'color':'#0d1526'}],
-                   'threshold':{'line':{'color':gc,'width':2},'thickness':0.8,'value':confidence}}))
-        fig3.update_layout(paper_bgcolor='#0d1526', font_color='#94a3b8', margin=dict(t=10,b=0,l=20,r=20), height=180)
+            number={'suffix': '%', 'font': {'size': 28, 'color': '#f1f5f9', 'family': 'IBM Plex Mono'}},
+            gauge={'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': '#1e2d4a', 'tickfont': {'color': '#475569', 'size': 10}},
+                   'bar': {'color': gc, 'thickness': 0.22}, 'bgcolor': '#060c18', 'borderwidth': 0,
+                   'steps': [{'range': [0, 50], 'color': '#0d1526'}, {'range': [50, 75], 'color': '#111827'}, {'range': [75, 100], 'color': '#0d1526'}],
+                   'threshold': {'line': {'color': gc, 'width': 2}, 'thickness': 0.8, 'value': confidence}}))
+        fig3.update_layout(paper_bgcolor='#0d1526', font_color='#94a3b8', margin=dict(t=10, b=0, l=20, r=20), height=180)
         st.plotly_chart(fig3, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -313,6 +446,6 @@ if run:
 st.markdown("""
 <div style="text-align:center;margin-top:4rem;padding-top:1.5rem;border-top:1px solid #1e2d4a;
             font-family:'IBM Plex Mono',monospace;font-size:11px;color:#334155;letter-spacing:1px;">
-    ECO-INSIGHT AI &nbsp;·&nbsp; POWERED BY CLAUDE SONNET + WEB SEARCH &nbsp;·&nbsp; SEMANTIC ECONOMIC CLASSIFIER
+    ECO-INSIGHT AI &nbsp;·&nbsp; 100% OFFLINE RULE-BASED ENGINE &nbsp;·&nbsp; NO API KEY REQUIRED
 </div>
 """, unsafe_allow_html=True)
